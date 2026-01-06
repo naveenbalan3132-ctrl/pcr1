@@ -1,85 +1,101 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
+import ta
 
-st.set_page_config(page_title="NIFTY PCR Analysis", layout="centered")
-st.title("📊 NIFTY Historical PCR (Official NSE Data)")
+st.set_page_config(page_title="Multi-Timeframe TA", layout="wide")
+st.title("📊 Multi-Timeframe Technical Analysis Terminal")
 
-# ===============================
+# ============================
 # USER INPUT
-# ===============================
-days = st.slider("Select past trading days", 5, 60, 20)
+# ============================
+symbol = st.text_input("Enter Symbol", "NIFTY50.NS")
+timeframes = {
+    "Daily": "1d",
+    "Hourly": "1h",
+    "15 Min": "15m"
+}
 
-# ===============================
-# LOAD NSE FO BHAVCOPY
-# ===============================
-@st.cache_data
-def load_bhavcopy(date):
-    date_str = date.strftime("%d%m%Y")
-    url = f"https://archives.nseindia.com/content/fo/fo{date_str}.zip"
-    try:
-        return pd.read_csv(url, compression="zip")
-    except:
-        return None
+# ============================
+# TECHNICAL CALCULATIONS
+# ============================
+def analyze(df):
+    df["EMA20"] = ta.trend.ema_indicator(df["Close"], 20)
+    df["EMA50"] = ta.trend.ema_indicator(df["Close"], 50)
+    df["RSI"] = ta.momentum.rsi(df["Close"], 14)
+    macd = ta.trend.MACD(df["Close"])
+    df["MACD"] = macd.macd()
+    df["MACD_SIGNAL"] = macd.macd_signal()
 
-# ===============================
-# CALCULATE PCR
-# ===============================
-records = []
-current_date = datetime.today()
+    latest = df.iloc[-1]
 
-while len(records) < days:
-    df = load_bhavcopy(current_date)
+    score = 0
+    if latest["Close"] > latest["EMA20"] > latest["EMA50"]:
+        score += 1
+    if latest["RSI"] > 50:
+        score += 1
+    if latest["MACD"] > latest["MACD_SIGNAL"]:
+        score += 1
 
-    if df is not None:
-        nifty = df[
-            (df["INSTRUMENT"] == "OPTIDX") &
-            (df["SYMBOL"] == "NIFTY")
-        ]
+    if score >= 2:
+        bias = "Bullish"
+    elif score <= 1:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
 
-        if not nifty.empty:
-            call_oi = nifty[nifty["OPTION_TYP"] == "CE"]["OPEN_INT"].sum()
-            put_oi = nifty[nifty["OPTION_TYP"] == "PE"]["OPEN_INT"].sum()
+    return bias, latest
 
-            if call_oi > 0:
-                pcr = round(put_oi / call_oi, 3)
-                records.append({
-                    "Date": current_date.date(),
-                    "PCR": pcr
-                })
+# ============================
+# DATA FETCH
+# ============================
+results = []
 
-    current_date -= timedelta(days=1)
+for tf, interval in timeframes.items():
+    data = yf.download(
+        symbol,
+        period="60d" if interval != "1d" else "6mo",
+        interval=interval,
+        progress=False
+    )
 
-pcr_df = pd.DataFrame(records).sort_values("Date").set_index("Date")
+    if data.empty:
+        continue
 
-# ===============================
-# DISPLAY DATA
-# ===============================
-st.subheader("📋 PCR Data")
-st.dataframe(pcr_df, use_container_width=True)
+    bias, latest = analyze(data)
 
-# ===============================
-# PCR CHART (NO MATPLOTLIB)
-# ===============================
-st.subheader("📈 PCR Trend")
-st.line_chart(pcr_df["PCR"])
+    results.append({
+        "Timeframe": tf,
+        "Close": round(latest["Close"], 2),
+        "RSI": round(latest["RSI"], 2),
+        "EMA20": round(latest["EMA20"], 2),
+        "EMA50": round(latest["EMA50"], 2),
+        "MACD": round(latest["MACD"], 2),
+        "Bias": bias
+    })
 
-# ===============================
-# INTERPRETATION
-# ===============================
-latest_pcr = pcr_df.iloc[-1]["PCR"]
+# ============================
+# DISPLAY
+# ============================
+df_result = pd.DataFrame(results)
 
-st.subheader("🧠 Market Sentiment")
+st.subheader("📌 Multi-Timeframe Technical View")
+st.dataframe(df_result, use_container_width=True)
 
-if latest_pcr > 1.3:
-    st.success("Extreme Bullish (Put-heavy positioning)")
-elif 1.1 <= latest_pcr <= 1.3:
-    st.info("Bullish Bias")
-elif 0.9 <= latest_pcr < 1.1:
-    st.warning("Neutral Zone")
-elif 0.7 <= latest_pcr < 0.9:
-    st.warning("Bearish Bias")
+# ============================
+# FINAL SIGNAL ENGINE
+# ============================
+bullish_count = df_result[df_result["Bias"] == "Bullish"].shape[0]
+bearish_count = df_result[df_result["Bias"] == "Bearish"].shape[0]
+
+st.subheader("🧠 Institutional Bias Engine")
+
+if bullish_count >= 2:
+    st.success("📈 Strong Buy Bias (Multi-Timeframe Alignment)")
+elif bearish_count >= 2:
+    st.error("📉 Strong Sell Bias (Multi-Timeframe Alignment)")
 else:
-    st.error("Extreme Bearish Sentiment")
+    st.warning("⚠️ No Clear Trend – Wait")
 
-st.caption("Source: NSE Official FO Bhavcopy | End-of-Day Data")
+st.caption("For educational & analytical use only")
