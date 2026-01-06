@@ -1,96 +1,97 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import requests
 from datetime import datetime, timedelta
+from io import BytesIO
+import zipfile
 
-st.set_page_config(page_title="Historical PCR Analysis", layout="centered")
-st.title("📊 Historical Put–Call Ratio (PCR) – NIFTY")
+st.set_page_config(page_title="NIFTY PCR Analysis", layout="centered")
+st.title("📊 NIFTY Historical Put–Call Ratio (PCR)")
+st.caption("Source: NSE Official FO Bhavcopy")
 
-# =====================================
+# ======================================
 # USER INPUT
-# =====================================
+# ======================================
 days = st.slider("Select number of past trading days", 5, 60, 20)
 
-# =====================================
-# FUNCTION TO LOAD NSE BHAVCOPY
-# =====================================
+# ======================================
+# NSE BHAVCOPY FETCH (LEGAL)
+# ======================================
 @st.cache_data
-def load_bhavcopy(date):
+def fetch_bhavcopy(date):
     date_str = date.strftime("%d%m%Y")
     url = f"https://archives.nseindia.com/content/fo/fo{date_str}.zip"
 
     try:
-        df = pd.read_csv(url, compression="zip")
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+
+        z = zipfile.ZipFile(BytesIO(r.content))
+        csv_name = z.namelist()[0]
+        df = pd.read_csv(z.open(csv_name))
         return df
     except:
         return None
 
-# =====================================
-# COLLECT HISTORICAL PCR
-# =====================================
+# ======================================
+# PCR CALCULATION
+# ======================================
 records = []
-today = datetime.today()
+date = datetime.today()
 
-while len(records) < days:
-    df = load_bhavcopy(today)
+with st.spinner("Fetching historical data..."):
+    while len(records) < days:
+        df = fetch_bhavcopy(date)
 
-    if df is not None:
-        nifty = df[
-            (df["INSTRUMENT"] == "OPTIDX") &
-            (df["SYMBOL"] == "NIFTY")
-        ]
+        if df is not None:
+            nifty = df[
+                (df["INSTRUMENT"] == "OPTIDX") &
+                (df["SYMBOL"] == "NIFTY")
+            ]
 
-        if not nifty.empty:
-            call_oi = nifty[nifty["OPTION_TYP"] == "CE"]["OPEN_INT"].sum()
-            put_oi = nifty[nifty["OPTION_TYP"] == "PE"]["OPEN_INT"].sum()
+            if not nifty.empty:
+                call_oi = nifty[nifty["OPTION_TYP"] == "CE"]["OPEN_INT"].sum()
+                put_oi = nifty[nifty["OPTION_TYP"] == "PE"]["OPEN_INT"].sum()
 
-            if call_oi > 0:
-                pcr = round(put_oi / call_oi, 3)
-                records.append({
-                    "Date": today.date(),
-                    "PCR": pcr
-                })
+                if call_oi > 0:
+                    records.append({
+                        "Date": date.date(),
+                        "PCR": round(put_oi / call_oi, 3)
+                    })
 
-    today -= timedelta(days=1)
+        date -= timedelta(days=1)
 
-pcr_df = pd.DataFrame(records).sort_values("Date")
+pcr_df = pd.DataFrame(records).sort_values("Date").reset_index(drop=True)
 
-# =====================================
+# ======================================
 # DISPLAY TABLE
-# =====================================
-st.subheader("📋 Historical PCR Table")
+# ======================================
+st.subheader("📋 Historical PCR Data")
 st.dataframe(pcr_df, use_container_width=True)
 
-# =====================================
-# PCR TREND CHART
-# =====================================
+# ======================================
+# STREAMLIT NATIVE CHART (NO MATPLOTLIB)
+# ======================================
 st.subheader("📈 PCR Trend")
+st.line_chart(pcr_df.set_index("Date")["PCR"])
 
-fig, ax = plt.subplots()
-ax.plot(pcr_df["Date"], pcr_df["PCR"], marker="o")
-ax.axhline(1.0, linestyle="--")
-ax.set_ylabel("PCR")
-ax.set_xlabel("Date")
-ax.set_title("NIFTY Historical PCR")
-
-st.pyplot(fig)
-
-# =====================================
+# ======================================
 # INTERPRETATION
-# =====================================
+# ======================================
 latest_pcr = pcr_df.iloc[-1]["PCR"]
 
-st.subheader("🧠 Interpretation")
+st.subheader("🧠 Market Sentiment")
 
 if latest_pcr > 1.3:
-    st.success("Extreme Bullish Sentiment (Put heavy)")
+    st.success("Extreme Bullish Sentiment (Put Heavy)")
 elif 1.1 <= latest_pcr <= 1.3:
     st.info("Bullish Bias")
 elif 0.9 <= latest_pcr < 1.1:
-    st.warning("Neutral / Balanced")
+    st.warning("Neutral Zone")
 elif 0.7 <= latest_pcr < 0.9:
     st.warning("Bearish Bias")
 else:
     st.error("Extreme Bearish Sentiment")
 
-st.caption("Source: NSE Official FO Bhavcopy | End-of-Day Data")
+st.caption("End-of-Day PCR | Suitable for Research & Analysis")
