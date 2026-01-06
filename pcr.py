@@ -1,72 +1,123 @@
 import streamlit as st
 import requests
-import pandas as pd
 import time
+from datetime import datetime
 
-st.set_page_config(page_title="NIFTY Live PCR", layout="centered")
+st.set_page_config(
+    page_title="NIFTY PCR Dashboard",
+    layout="centered"
+)
 
-st.title("📊 NIFTY Live Put Call Ratio (PCR)")
+st.title("📊 NIFTY Put Call Ratio (Institutional Model)")
 
-# NSE URLs
+# =========================
+# CONFIG
+# =========================
 BASE_URL = "https://www.nseindia.com"
-OPTION_CHAIN_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+OPTION_CHAIN_URL = (
+    "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+)
 
-# Headers to avoid blocking
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "User-Agent": "Mozilla/5.0",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br"
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive"
 }
 
-def get_nifty_pcr():
+CACHE_TTL = 600  # 10 minutes (INSTITUTIONAL STANDARD)
+
+# =========================
+# DATA FETCHER (SAFE)
+# =========================
+@st.cache_data(ttl=CACHE_TTL)
+def fetch_nifty_option_chain():
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    # First hit NSE homepage
-    session.get(BASE_URL, timeout=5)
-    response = session.get(OPTION_CHAIN_URL, timeout=5)
+    try:
+        session.get(BASE_URL, timeout=5)
+        response = session.get(OPTION_CHAIN_URL, timeout=5)
 
-    data = response.json()
+        if response.status_code != 200:
+            return None
 
-    records = data["records"]["data"]
+        data = response.json()
+        if "records" not in data:
+            return None
 
-    total_call_oi = 0
-    total_put_oi = 0
+        return data["records"]["data"]
 
-    for record in records:
-        if "CE" in record:
-            total_call_oi += record["CE"]["openInterest"]
-        if "PE" in record:
-            total_put_oi += record["PE"]["openInterest"]
-
-    pcr = round(total_put_oi / total_call_oi, 3)
-
-    return total_call_oi, total_put_oi, pcr
+    except Exception:
+        return None
 
 
-# Auto refresh option
-refresh = st.checkbox("🔄 Auto Refresh (30 sec)")
+# =========================
+# PCR CALCULATION CORE
+# =========================
+def calculate_pcr(records):
+    call_oi = 0
+    put_oi = 0
 
-try:
-    call_oi, put_oi, pcr_value = get_nifty_pcr()
+    for row in records:
+        ce = row.get("CE")
+        pe = row.get("PE")
 
-    st.metric("Total Call OI", f"{call_oi:,}")
-    st.metric("Total Put OI", f"{put_oi:,}")
-    st.metric("Put Call Ratio (PCR)", pcr_value)
+        if ce:
+            call_oi += ce.get("openInterest", 0)
+        if pe:
+            put_oi += pe.get("openInterest", 0)
 
-    if pcr_value > 1.2:
-        st.success("📈 Market Sentiment: **Strongly Bullish**")
-    elif 1.0 <= pcr_value <= 1.2:
-        st.info("📊 Market Sentiment: **Bullish / Neutral**")
-    elif 0.8 <= pcr_value < 1.0:
-        st.warning("📉 Market Sentiment: **Bearish**")
-    else:
-        st.error("🔥 Market Sentiment: **Strongly Bearish**")
+    if call_oi == 0:
+        return None
 
-except Exception as e:
-    st.error("⚠ NSE blocked the request. Please refresh after some time.")
-    st.text(str(e))
+    pcr = round(put_oi / call_oi, 3)
+    return call_oi, put_oi, pcr
 
-if refresh:
-    time.sleep(30)
-    st.experimental_rerun()
+
+# =========================
+# UI CONTROLS
+# =========================
+if st.button("🔄 Refresh Data (Manual)"):
+    st.cache_data.clear()
+
+records = fetch_nifty_option_chain()
+
+if records is None:
+    st.error("⚠ Data temporarily unavailable (NSE blocked or slow)")
+    st.info("💡 Institutional systems retry after few minutes")
+    st.stop()
+
+result = calculate_pcr(records)
+
+if result is None:
+    st.error("⚠ Unable to compute PCR")
+    st.stop()
+
+call_oi, put_oi, pcr = result
+
+# =========================
+# DISPLAY
+# =========================
+st.metric("Total Call OI", f"{call_oi:,}")
+st.metric("Total Put OI", f"{put_oi:,}")
+st.metric("Put Call Ratio", pcr)
+
+# =========================
+# SENTIMENT ENGINE
+# =========================
+if pcr >= 1.3:
+    sentiment = "Strongly Bullish"
+elif 1.1 <= pcr < 1.3:
+    sentiment = "Bullish"
+elif 0.9 <= pcr < 1.1:
+    sentiment = "Neutral"
+elif 0.7 <= pcr < 0.9:
+    sentiment = "Bearish"
+else:
+    sentiment = "Strongly Bearish"
+
+st.subheader("📌 Market Interpretation")
+st.write(f"**{sentiment} Bias**")
+
+st.caption(f"Last updated: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}")
