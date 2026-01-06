@@ -1,101 +1,134 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-import ta
+import requests
 
 st.set_page_config(page_title="Multi-Timeframe TA", layout="wide")
-st.title("📊 Multi-Timeframe Technical Analysis Terminal")
+st.title("📊 Institutional Multi-Timeframe Technical Analysis")
 
-# ============================
+API_KEY = st.secrets["ALPHA_VANTAGE_KEY"]
+
+# =========================
 # USER INPUT
-# ============================
-symbol = st.text_input("Enter Symbol", "NIFTY50.NS")
-timeframes = {
-    "Daily": "1d",
-    "Hourly": "1h",
-    "15 Min": "15m"
-}
+# =========================
+symbol = st.text_input("Enter Symbol", "NIFTY")
+market = st.selectbox("Market", ["India", "Global"])
 
-# ============================
-# TECHNICAL CALCULATIONS
-# ============================
-def analyze(df):
-    df["EMA20"] = ta.trend.ema_indicator(df["Close"], 20)
-    df["EMA50"] = ta.trend.ema_indicator(df["Close"], 50)
-    df["RSI"] = ta.momentum.rsi(df["Close"], 14)
-    macd = ta.trend.MACD(df["Close"])
-    df["MACD"] = macd.macd()
-    df["MACD_SIGNAL"] = macd.macd_signal()
+if market == "India":
+    symbol_api = f"{symbol}.BSE"
+else:
+    symbol_api = symbol
 
-    latest = df.iloc[-1]
-
-    score = 0
-    if latest["Close"] > latest["EMA20"] > latest["EMA50"]:
-        score += 1
-    if latest["RSI"] > 50:
-        score += 1
-    if latest["MACD"] > latest["MACD_SIGNAL"]:
-        score += 1
-
-    if score >= 2:
-        bias = "Bullish"
-    elif score <= 1:
-        bias = "Bearish"
-    else:
-        bias = "Neutral"
-
-    return bias, latest
-
-# ============================
+# =========================
 # DATA FETCH
-# ============================
-results = []
-
-for tf, interval in timeframes.items():
-    data = yf.download(
-        symbol,
-        period="60d" if interval != "1d" else "6mo",
-        interval=interval,
-        progress=False
+# =========================
+def fetch_data(interval):
+    url = (
+        "https://www.alphavantage.co/query"
+        f"?function=TIME_SERIES_INTRADAY"
+        f"&symbol={symbol_api}"
+        f"&interval={interval}"
+        f"&outputsize=compact"
+        f"&apikey={API_KEY}"
     )
 
-    if data.empty:
-        continue
+    r = requests.get(url)
+    data = r.json()
 
-    bias, latest = analyze(data)
+    key = f"Time Series ({interval})"
+    if key not in data:
+        return None
 
-    results.append({
-        "Timeframe": tf,
-        "Close": round(latest["Close"], 2),
-        "RSI": round(latest["RSI"], 2),
-        "EMA20": round(latest["EMA20"], 2),
-        "EMA50": round(latest["EMA50"], 2),
-        "MACD": round(latest["MACD"], 2),
-        "Bias": bias
-    })
+    df = pd.DataFrame.from_dict(data[key], orient="index")
+    df = df.astype(float)
+    df.index = pd.to_datetime(df.index)
+    df.sort_index(inplace=True)
 
-# ============================
-# DISPLAY
-# ============================
-df_result = pd.DataFrame(results)
+    df.rename(columns={
+        "1. open": "Open",
+        "2. high": "High",
+        "3. low": "Low",
+        "4. close": "Close",
+        "5. volume": "Volume"
+    }, inplace=True)
 
-st.subheader("📌 Multi-Timeframe Technical View")
-st.dataframe(df_result, use_container_width=True)
+    return df
 
-# ============================
-# FINAL SIGNAL ENGINE
-# ============================
-bullish_count = df_result[df_result["Bias"] == "Bullish"].shape[0]
-bearish_count = df_result[df_result["Bias"] == "Bearish"].shape[0]
+# =========================
+# INDICATORS (NO LIBRARY)
+# =========================
+def calculate_indicators(df):
+    df["EMA20"] = df["Close"].ewm(span=20).mean()
+    df["EMA50"] = df["Close"].ewm(span=50).mean()
 
-st.subheader("🧠 Institutional Bias Engine")
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = -delta.clip(upper=0).rolling(14).mean()
+    rs = gain / loss
+    df["RSI"] = 100 - (100 / (1 + rs))
 
-if bullish_count >= 2:
-    st.success("📈 Strong Buy Bias (Multi-Timeframe Alignment)")
-elif bearish_count >= 2:
-    st.error("📉 Strong Sell Bias (Multi-Timeframe Alignment)")
+    return df
+
+def get_bias(row):
+    score = 0
+    if row["Close"] > row["EMA20"] > row["EMA50"]:
+        score += 1
+    if row["RSI"] > 50:
+        score += 1
+
+    if score == 2:
+        return "Bullish"
+    elif score == 0:
+        return "Bearish"
+    else:
+        return "Neutral"
+
+# =========================
+# ANALYSIS
+# =========================
+timeframes = {
+    "15 Min": "15min",
+    "Hourly": "60min"
+}
+
+results = []
+
+with st.spinner("Fetching & analyzing data..."):
+    for tf, interval in timeframes.items():
+        df = fetch_data(interval)
+        if df is None or len(df) < 50:
+            continue
+
+        df = calculate_indicators(df)
+        latest = df.iloc[-1]
+
+        results.append({
+            "Timeframe": tf,
+            "Close": round(latest["Close"], 2),
+            "RSI": round(latest["RSI"], 2),
+            "EMA20": round(latest["EMA20"], 2),
+            "EMA50": round(latest["EMA50"], 2),
+            "Bias": get_bias(latest)
+        })
+
+# =========================
+# OUTPUT
+# =========================
+result_df = pd.DataFrame(results)
+
+st.subheader("📌 Multi-Timeframe View")
+st.dataframe(result_df, use_container_width=True)
+
+bullish = result_df[result_df["Bias"] == "Bullish"].shape[0]
+bearish = result_df[result_df["Bias"] == "Bearish"].shape[0]
+
+st.subheader("🧠 Final Institutional Bias")
+
+if bullish >= 2:
+    st.success("📈 Strong Buy Bias")
+elif bearish >= 2:
+    st.error("📉 Strong Sell Bias")
 else:
-    st.warning("⚠️ No Clear Trend – Wait")
+    st.warning("⚠️ No Trade Zone")
 
-st.caption("For educational & analytical use only")
+st.caption("Pure price-based, cloud-safe, institutional logic")
