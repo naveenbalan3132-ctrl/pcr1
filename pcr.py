@@ -1,92 +1,101 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import pyotp
-from smartapi import SmartConnect
+import numpy as np
+import ta
 from datetime import datetime
 
-st.set_page_config(page_title="Intraday Stocks", layout="wide")
-st.title("📈 Intraday Stocks Dashboard (Angel One API)")
+st.set_page_config(page_title="Market Prediction Terminal", layout="wide")
+st.title("📊 Market Prediction – India & Global")
 
-# ======================================
-# LOGIN (CACHED – SAFE)
-# ======================================
-@st.cache_resource
-def angel_login():
-    smart = SmartConnect(api_key=st.secrets["ANGEL_API_KEY"])
-    totp = pyotp.TOTP(st.secrets["ANGEL_TOTP_SECRET"]).now()
-    smart.generateSession(
-        st.secrets["ANGEL_CLIENT_ID"],
-        st.secrets["ANGEL_MPIN"],
-        totp
-    )
-    return smart
-
-smart = angel_login()
-
-# ======================================
-# STOCK LIST (EDITABLE)
-# ======================================
-STOCKS = {
-    "RELIANCE": "2885",
-    "TCS": "11536",
-    "INFY": "1594",
-    "ICICIBANK": "4963",
-    "HDFCBANK": "1333"
+# =========================================
+# MARKET UNIVERSE (LEGAL SYMBOLS)
+# =========================================
+MARKETS = {
+    "NIFTY 50 (India)": "^NSEI",
+    "BANK NIFTY (India)": "^NSEBANK",
+    "SENSEX (India)": "^BSESN",
+    "S&P 500 (USA)": "^GSPC",
+    "NASDAQ 100 (USA)": "^NDX",
+    "DOW JONES (USA)": "^DJI",
+    "FTSE 100 (UK)": "^FTSE",
+    "DAX (Germany)": "^GDAXI",
+    "NIKKEI 225 (Japan)": "^N225",
+    "HANG SENG (Hong Kong)": "^HSI"
 }
 
-# ======================================
-# FETCH INTRADAY DATA
-# ======================================
-@st.cache_data(ttl=30)
-def fetch_intraday_data():
-    data = []
+selected_market = st.selectbox("Select Market", list(MARKETS.keys()))
+symbol = MARKETS[selected_market]
 
-    for symbol, token in STOCKS.items():
-        quote = smart.ltpData(
-            exchange="NSE",
-            tradingsymbol=symbol,
-            symboltoken=token
-        )
+# =========================================
+# FETCH DATA (LEGAL)
+# =========================================
+@st.cache_data(ttl=3600)
+def fetch_data(symbol):
+    df = yf.download(symbol, period="6mo", interval="1d")
+    return df
 
-        ltp = quote["data"]["ltp"]
-        open_price = quote["data"]["open"]
-        high = quote["data"]["high"]
-        low = quote["data"]["low"]
-        prev_close = quote["data"]["close"]
+df = fetch_data(symbol)
 
-        change_pct = round(
-            ((ltp - prev_close) / prev_close) * 100, 2
-        )
+if df.empty:
+    st.error("Market data unavailable")
+    st.stop()
 
-        data.append([
-            symbol, ltp, open_price, high, low, prev_close, change_pct
-        ])
+# =========================================
+# TECHNICAL INDICATORS
+# =========================================
+df["EMA20"] = ta.trend.ema_indicator(df["Close"], window=20)
+df["EMA50"] = ta.trend.ema_indicator(df["Close"], window=50)
+df["RSI"] = ta.momentum.rsi(df["Close"], window=14)
+df["ATR"] = ta.volatility.average_true_range(
+    df["High"], df["Low"], df["Close"], window=14
+)
 
-    return pd.DataFrame(
-        data,
-        columns=[
-            "Stock", "LTP", "Open", "High", "Low", "Prev Close", "Change %"
-        ]
-    )
+latest = df.iloc[-1]
 
-df = fetch_intraday_data()
+# =========================================
+# PREDICTION ENGINE (RULE BASED)
+# =========================================
+score = 0
 
-# ======================================
-# DISPLAY TABLE
-# ======================================
-st.dataframe(
-    df.style.format({
-        "LTP": "₹{:.2f}",
-        "Open": "₹{:.2f}",
-        "High": "₹{:.2f}",
-        "Low": "₹{:.2f}",
-        "Prev Close": "₹{:.2f}",
-        "Change %": "{:.2f}%"
-    }),
-    use_container_width=True
+if latest["Close"] > latest["EMA20"] > latest["EMA50"]:
+    score += 2
+elif latest["Close"] < latest["EMA20"] < latest["EMA50"]:
+    score -= 2
+
+if latest["RSI"] > 55:
+    score += 1
+elif latest["RSI"] < 45:
+    score -= 1
+
+if score >= 2:
+    prediction = "Bullish Bias 📈"
+elif score <= -2:
+    prediction = "Bearish Bias 📉"
+else:
+    prediction = "Neutral / Range 🟡"
+
+# =========================================
+# DISPLAY TERMINAL
+# =========================================
+st.subheader(f"📍 {selected_market} – Market Snapshot")
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Last Close", round(latest["Close"], 2))
+col2.metric("RSI (14)", round(latest["RSI"], 2))
+col3.metric("ATR (Volatility)", round(latest["ATR"], 2))
+
+st.divider()
+
+st.subheader("🧠 Market Prediction (Short-Term)")
+st.write(f"### {prediction}")
+
+st.info(
+    "Prediction based on trend + momentum + volatility.\n"
+    "Best used for **1–5 day directional bias**, not exact targets."
 )
 
 st.caption(
-    f"Live data via Angel One SmartAPI | "
-    f"Updated at {datetime.now().strftime('%H:%M:%S')}"
+    f"Data Source: Yahoo Finance | "
+    f"Last Updated: {df.index[-1].strftime('%d %b %Y')}"
 )
