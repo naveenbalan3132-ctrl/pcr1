@@ -1,41 +1,47 @@
-import requests
-import json
+import streamlit as st
+import pandas as pd
 from datetime import datetime
 
-BASE_URL = "https://www.nseindia.com"
-URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+st.set_page_config(page_title="NIFTY PCR (Official NSE Data)")
+st.title("📊 NIFTY Put Call Ratio (Official NSE – Legal)")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "en-US,en;q=0.9"
-}
+@st.cache_data
+def load_bhavcopy():
+    date = datetime.now().strftime("%d%m%Y")
 
-session = requests.Session()
-session.headers.update(HEADERS)
+    url = (
+        f"https://archives.nseindia.com/content/fo/"
+        f"fo{date}.zip"
+    )
 
-session.get(BASE_URL)
-resp = session.get(URL)
-data = resp.json()
+    try:
+        df = pd.read_csv(
+            url,
+            compression="zip"
+        )
+        return df
+    except:
+        return None
 
-call_oi = 0
-put_oi = 0
+df = load_bhavcopy()
 
-for row in data["records"]["data"]:
-    if row.get("CE"):
-        call_oi += row["CE"]["openInterest"]
-    if row.get("PE"):
-        put_oi += row["PE"]["openInterest"]
+if df is None:
+    st.error("Bhavcopy not yet available (published after market hours)")
+    st.stop()
 
-pcr = round(put_oi / call_oi, 3)
+# Filter NIFTY options
+df = df[
+    (df["INSTRUMENT"] == "OPTIDX") &
+    (df["SYMBOL"] == "NIFTY")
+]
 
-output = {
-    "call_oi": call_oi,
-    "put_oi": put_oi,
-    "pcr": pcr,
-    "timestamp": datetime.now().isoformat()
-}
+total_call_oi = df[df["OPTION_TYP"] == "CE"]["OPEN_INT"].sum()
+total_put_oi = df[df["OPTION_TYP"] == "PE"]["OPEN_INT"].sum()
 
-with open("pcr_data.json", "w") as f:
-    json.dump(output, f, indent=4)
+pcr = round(total_put_oi / total_call_oi, 3)
 
-print("PCR data updated")
+st.metric("Total Call OI", f"{total_call_oi:,}")
+st.metric("Total Put OI", f"{total_put_oi:,}")
+st.metric("PCR (EOD)", pcr)
+
+st.caption("Source: NSE Official Bhavcopy (End-of-Day)")
