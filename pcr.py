@@ -4,76 +4,87 @@ import pyotp
 from smartapi import SmartConnect
 from datetime import datetime
 
-st.set_page_config(page_title="NIFTY Live PCR (Broker API)")
-st.title("📊 NIFTY Live Put Call Ratio (Broker Feed)")
+st.set_page_config(page_title="NIFTY Live PCR", layout="centered")
+st.title("📊 NIFTY Live PCR Summary (Angel One API)")
 
-# =============================
-# AUTHENTICATION
-# =============================
+# =====================================
+# LOGIN (CACHED – INSTITUTIONAL STYLE)
+# =====================================
 @st.cache_resource
 def angel_login():
     api_key = st.secrets["ANGEL_API_KEY"]
     client_id = st.secrets["ANGEL_CLIENT_ID"]
     mpin = st.secrets["ANGEL_MPIN"]
-    totp_secret = st.secrets["ANGEL_TOTP"]
+    totp_secret = st.secrets["ANGEL_TOTP_SECRET"]
 
-    obj = SmartConnect(api_key=api_key)
+    smart = SmartConnect(api_key=api_key)
     totp = pyotp.TOTP(totp_secret).now()
+    smart.generateSession(client_id, mpin, totp)
 
-    session = obj.generateSession(client_id, mpin, totp)
-    return obj
+    return smart
 
-angel = angel_login()
+smart = angel_login()
 
-# =============================
-# FETCH OPTION CHAIN
-# =============================
-@st.cache_data(ttl=120)
-def fetch_nifty_option_chain():
-    response = angel.optionChain(
+# =====================================
+# FETCH OPTION CHAIN (LIVE)
+# =====================================
+@st.cache_data(ttl=60)
+def fetch_option_chain():
+    """
+    Angel One option chain for NIFTY
+    """
+    response = smart.optionChain(
         exchange="NFO",
-        symboltoken="26000",  # NIFTY token (Angel standard)
-        interval="ONE_MINUTE"
+        tradingsymbol="NIFTY",
+        strikeprice=0,
+        count=100
     )
-    return response["data"]
 
-data = fetch_nifty_option_chain()
+    if "data" not in response:
+        return None
 
-df = pd.DataFrame(data)
+    return pd.DataFrame(response["data"])
 
-# =============================
-# PCR CORE (INSTITUTIONAL)
-# =============================
-call_oi = df[df["optionType"] == "CE"]["openInterest"].sum()
-put_oi = df[df["optionType"] == "PE"]["openInterest"].sum()
+df = fetch_option_chain()
 
-pcr = round(put_oi / call_oi, 3)
+if df is None or df.empty:
+    st.error("Live option data unavailable")
+    st.stop()
 
-# =============================
-# UI METRICS
-# =============================
-st.metric("Total Call OI", f"{int(call_oi):,}")
-st.metric("Total Put OI", f"{int(put_oi):,}")
-st.metric("Put Call Ratio", pcr)
+# =====================================
+# PCR CORE LOGIC (SUMMARY LEVEL)
+# =====================================
+total_call_oi = df[df["optiontype"] == "CE"]["openinterest"].sum()
+total_put_oi = df[df["optiontype"] == "PE"]["openinterest"].sum()
 
-# =============================
-# SENTIMENT ENGINE
-# =============================
+pcr = round(total_put_oi / total_call_oi, 3)
+
+# =====================================
+# SUMMARY DASHBOARD
+# =====================================
+col1, col2, col3 = st.columns(3)
+
+col1.metric("Total Call OI", f"{int(total_call_oi):,}")
+col2.metric("Total Put OI", f"{int(total_put_oi):,}")
+col3.metric("PCR", pcr)
+
+# =====================================
+# INSTITUTIONAL INTERPRETATION
+# =====================================
+st.subheader("📌 PCR Interpretation")
+
 if pcr >= 1.3:
-    bias = "Strongly Bullish"
+    st.success("Strongly Bullish (Put writing dominance)")
 elif 1.1 <= pcr < 1.3:
-    bias = "Bullish"
+    st.info("Bullish Bias")
 elif 0.9 <= pcr < 1.1:
-    bias = "Neutral"
+    st.warning("Neutral / Range-bound")
 elif 0.7 <= pcr < 0.9:
-    bias = "Bearish"
+    st.warning("Bearish Bias")
 else:
-    bias = "Strongly Bearish"
-
-st.subheader("📌 Market Bias")
-st.write(f"**{bias}**")
+    st.error("Strongly Bearish (Call writing dominance)")
 
 st.caption(
     f"Live via Angel One SmartAPI | "
-    f"Updated: {datetime.now().strftime('%H:%M:%S')}"
+    f"Updated at {datetime.now().strftime('%H:%M:%S')}"
 )
