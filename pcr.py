@@ -4,87 +4,89 @@ import pyotp
 from smartapi import SmartConnect
 from datetime import datetime
 
-st.set_page_config(page_title="NIFTY Live PCR", layout="centered")
-st.title("📊 NIFTY Live PCR Summary (Angel One API)")
+st.set_page_config(page_title="Intraday Stocks", layout="wide")
+st.title("📈 Intraday Stocks Dashboard (Angel One API)")
 
-# =====================================
-# LOGIN (CACHED – INSTITUTIONAL STYLE)
-# =====================================
+# ======================================
+# LOGIN (CACHED – SAFE)
+# ======================================
 @st.cache_resource
 def angel_login():
-    api_key = st.secrets["ANGEL_API_KEY"]
-    client_id = st.secrets["ANGEL_CLIENT_ID"]
-    mpin = st.secrets["ANGEL_MPIN"]
-    totp_secret = st.secrets["ANGEL_TOTP_SECRET"]
-
-    smart = SmartConnect(api_key=api_key)
-    totp = pyotp.TOTP(totp_secret).now()
-    smart.generateSession(client_id, mpin, totp)
-
+    smart = SmartConnect(api_key=st.secrets["ANGEL_API_KEY"])
+    totp = pyotp.TOTP(st.secrets["ANGEL_TOTP_SECRET"]).now()
+    smart.generateSession(
+        st.secrets["ANGEL_CLIENT_ID"],
+        st.secrets["ANGEL_MPIN"],
+        totp
+    )
     return smart
 
 smart = angel_login()
 
-# =====================================
-# FETCH OPTION CHAIN (LIVE)
-# =====================================
-@st.cache_data(ttl=60)
-def fetch_option_chain():
-    """
-    Angel One option chain for NIFTY
-    """
-    response = smart.optionChain(
-        exchange="NFO",
-        tradingsymbol="NIFTY",
-        strikeprice=0,
-        count=100
+# ======================================
+# STOCK LIST (EDITABLE)
+# ======================================
+STOCKS = {
+    "RELIANCE": "2885",
+    "TCS": "11536",
+    "INFY": "1594",
+    "ICICIBANK": "4963",
+    "HDFCBANK": "1333"
+}
+
+# ======================================
+# FETCH INTRADAY DATA
+# ======================================
+@st.cache_data(ttl=30)
+def fetch_intraday_data():
+    data = []
+
+    for symbol, token in STOCKS.items():
+        quote = smart.ltpData(
+            exchange="NSE",
+            tradingsymbol=symbol,
+            symboltoken=token
+        )
+
+        ltp = quote["data"]["ltp"]
+        open_price = quote["data"]["open"]
+        high = quote["data"]["high"]
+        low = quote["data"]["low"]
+        prev_close = quote["data"]["close"]
+
+        change_pct = round(
+            ((ltp - prev_close) / prev_close) * 100, 2
+        )
+
+        data.append([
+            symbol, ltp, open_price, high, low, prev_close, change_pct
+        ])
+
+    return pd.DataFrame(
+        data,
+        columns=[
+            "Stock", "LTP", "Open", "High", "Low", "Prev Close", "Change %"
+        ]
     )
 
-    if "data" not in response:
-        return None
+df = fetch_intraday_data()
 
-    return pd.DataFrame(response["data"])
-
-df = fetch_option_chain()
-
-if df is None or df.empty:
-    st.error("Live option data unavailable")
-    st.stop()
-
-# =====================================
-# PCR CORE LOGIC (SUMMARY LEVEL)
-# =====================================
-total_call_oi = df[df["optiontype"] == "CE"]["openinterest"].sum()
-total_put_oi = df[df["optiontype"] == "PE"]["openinterest"].sum()
-
-pcr = round(total_put_oi / total_call_oi, 3)
-
-# =====================================
-# SUMMARY DASHBOARD
-# =====================================
-col1, col2, col3 = st.columns(3)
-
-col1.metric("Total Call OI", f"{int(total_call_oi):,}")
-col2.metric("Total Put OI", f"{int(total_put_oi):,}")
-col3.metric("PCR", pcr)
-
-# =====================================
-# INSTITUTIONAL INTERPRETATION
-# =====================================
-st.subheader("📌 PCR Interpretation")
-
-if pcr >= 1.3:
-    st.success("Strongly Bullish (Put writing dominance)")
-elif 1.1 <= pcr < 1.3:
-    st.info("Bullish Bias")
-elif 0.9 <= pcr < 1.1:
-    st.warning("Neutral / Range-bound")
-elif 0.7 <= pcr < 0.9:
-    st.warning("Bearish Bias")
-else:
-    st.error("Strongly Bearish (Call writing dominance)")
+# ======================================
+# DISPLAY TABLE
+# ======================================
+st.dataframe(
+    df.style.format({
+        "LTP": "₹{:.2f}",
+        "Open": "₹{:.2f}",
+        "High": "₹{:.2f}",
+        "Low": "₹{:.2f}",
+        "Prev Close": "₹{:.2f}",
+        "Change %": "{:.2f}%"
+    }),
+    use_container_width=True
+)
 
 st.caption(
-    f"Live via Angel One SmartAPI | "
+    f"Live data via Angel One SmartAPI | "
     f"Updated at {datetime.now().strftime('%H:%M:%S')}"
 )
