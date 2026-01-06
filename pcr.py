@@ -1,46 +1,79 @@
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
+import datetime
+import ta  # Technical Analysis library
 
-st.set_page_config(page_title="Indian Stock Screener (NSE Data)", layout="wide")
-st.title("Indian Stock Screener - NSE Data")
+st.set_page_config(page_title="Technical Stock Screener (NSE)", layout="wide")
+st.title("Technical Stock Screener - NSE Stocks")
 
-# NSE endpoint for all stock info
-NSE_URL = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-}
-
-@st.cache_data(ttl=300)
-def fetch_nse_data():
+# Helper function to get NSE historical data
+def get_nse_historical(symbol, start_date, end_date):
+    """
+    Fetch historical data from NSE official JSON API
+    """
+    url = f"https://www.nseindia.com/api/historical/cm/equity?symbol={symbol}&series=[%22EQ%22]&from={start_date}&to={end_date}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     session = requests.Session()
-    # NSE requires a preliminary request to set cookies
-    session.get("https://www.nseindia.com", headers=headers)
-    response = session.get(NSE_URL, headers=headers)
+    session.get("https://www.nseindia.com", headers=headers)  # Initialize cookies
+    response = session.get(url, headers=headers)
     data = response.json()
-    # Extract useful fields
     df = pd.DataFrame(data['data'])
-    df = df[['symbol', 'open', 'dayHigh', 'dayLow', 'lastPrice', 'totalTradedVolume', 'totalTradedValue', 'pChange']]
-    # Convert numeric columns
-    for col in ['open','dayHigh','dayLow','lastPrice','totalTradedVolume','totalTradedValue','pChange']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    if df.empty:
+        return None
+    df['date'] = pd.to_datetime(df['CH_DT'], format='%d-%b-%Y')
+    df['close'] = pd.to_numeric(df['CLOSE_PRICE'], errors='coerce')
+    df['open'] = pd.to_numeric(df['OPEN_PRICE'], errors='coerce')
+    df['high'] = pd.to_numeric(df['HIGH_PRICE'], errors='coerce')
+    df['low'] = pd.to_numeric(df['LOW_PRICE'], errors='coerce')
+    df['volume'] = pd.to_numeric(df['TOTTRDQTY'], errors='coerce')
+    df = df[['date', 'open', 'high', 'low', 'close', 'volume']].sort_values('date')
     return df
 
-df = fetch_nse_data()
+# Sidebar inputs
+symbol = st.text_input("Enter NSE Stock Symbol (e.g., INFY, TCS)", value="INFY").upper()
+start_date = st.date_input("Start Date", datetime.date.today() - datetime.timedelta(days=180))
+end_date = st.date_input("End Date", datetime.date.today())
 
-# Sidebar filters
-st.sidebar.header("Filters")
-price_min, price_max = st.sidebar.slider("Last Price Range", float(df['lastPrice'].min()), float(df['lastPrice'].max()), (float(df['lastPrice'].min()), float(df['lastPrice'].max())))
-volume_min, volume_max = st.sidebar.slider("Volume Range", int(df['totalTradedVolume'].min()), int(df['totalTradedVolume'].max()), (int(df['totalTradedVolume'].min()), int(df['totalTradedVolume'].max())))
-pchange_min, pchange_max = st.sidebar.slider("% Change Range", float(df['pChange'].min()), float(df['pChange'].max()), (float(df['pChange'].min()), float(df['pChange'].max())))
+if st.button("Get Technical Analysis"):
 
-# Apply filters
-filtered_df = df[
-    (df['lastPrice'] >= price_min) & (df['lastPrice'] <= price_max) &
-    (df['totalTradedVolume'] >= volume_min) & (df['totalTradedVolume'] <= volume_max) &
-    (df['pChange'] >= pchange_min) & (df['pChange'] <= pchange_max)
-]
+    df = get_nse_historical(symbol, start_date.strftime('%d-%m-%Y'), end_date.strftime('%d-%m-%Y'))
+    
+    if df is None or df.empty:
+        st.error("No data found for this symbol!")
+    else:
+        # Compute Technical Indicators
+        df['SMA20'] = ta.trend.sma_indicator(df['close'], window=20)
+        df['SMA50'] = ta.trend.sma_indicator(df['close'], window=50)
+        df['EMA20'] = ta.trend.ema_indicator(df['close'], window=20)
+        df['RSI14'] = ta.momentum.rsi(df['close'], window=14)
+        macd = ta.trend.MACD(df['close'])
+        df['MACD'] = macd.macd()
+        df['MACD_signal'] = macd.macd_signal()
+        df['BB_upper'] = ta.volatility.BollingerBands(df['close']).bollinger_hband()
+        df['BB_lower'] = ta.volatility.BollingerBands(df['close']).bollinger_lband()
+        
+        st.subheader(f"{symbol} Technical Data")
+        st.dataframe(df.tail(10))  # Show last 10 rows
 
-st.write(f"Showing {len(filtered_df)} stocks")
-st.dataframe(filtered_df.sort_values(by='lastPrice', ascending=False))
+        # Simple technical screen example
+        st.subheader("Technical Screener Signals")
+        signals = []
+
+        if df['close'].iloc[-1] > df['SMA50'].iloc[-1]:
+            signals.append("Price above 50-SMA (Bullish)")
+        else:
+            signals.append("Price below 50-SMA (Bearish)")
+
+        if df['RSI14'].iloc[-1] < 30:
+            signals.append("RSI oversold (Buy opportunity)")
+        elif df['RSI14'].iloc[-1] > 70:
+            signals.append("RSI overbought (Sell signal)")
+
+        if df['MACD'].iloc[-1] > df['MACD_signal'].iloc[-1]:
+            signals.append("MACD bullish crossover")
+        else:
+            signals.append("MACD bearish crossover")
+
+        st.write(signals)
